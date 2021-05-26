@@ -3,6 +3,7 @@ const wasm = @import("wasm.zig");
 const Allocator = std.mem.Allocator;
 const leb = std.leb;
 const meta = std.meta;
+const log = std.log.scoped(.parser);
 
 pub const Result = struct {
     module: wasm.Module,
@@ -60,6 +61,7 @@ fn Parser(comptime ReaderType: type) type {
 
         fn parseWasm(self: *Self, gpa: *Allocator) Error!Result {
             var arena = std.heap.ArenaAllocator.init(gpa);
+            errdefer arena.deinit();
             return Result{
                 .module = try self.parseModule(&arena.allocator),
                 .arena = arena.state,
@@ -92,12 +94,12 @@ fn Parser(comptime ReaderType: type) type {
                         for (try readVec(&module.custom, reader, gpa)) |*custom| {
                             // for custom section we read name and data section at once rather
                             // than read every byte individually as that's slow.
-                            const name_len = try readLeb(u32, reader);
+                            const name_len = try readLeb(u8, reader);
                             const name = try gpa.alloc(u8, name_len);
                             custom.name = name;
                             try reader.readNoEof(name);
 
-                            const data_len = len - name_len;
+                            const data_len = len - name_len - @sizeOf(u32);
                             const data = try gpa.alloc(u8, data_len);
                             custom.data = data;
                             try reader.readNoEof(data);
@@ -185,6 +187,7 @@ fn Parser(comptime ReaderType: type) type {
                             exp.* = .{
                                 .name = name,
                                 .kind = try readEnum(wasm.ExternalType, reader),
+                                .index = try readLeb(u32, reader),
                             };
                         }
                         try assertEnd(reader);
@@ -197,7 +200,7 @@ fn Parser(comptime ReaderType: type) type {
                     .code => {
                         for (try readVec(&module.code, reader, gpa)) |*code| {
                             const body_len = try readLeb(u32, reader);
-                            var code_reader = std.io.limitedReader(reader, body_len).reader();
+                            if (body_len != reader.context.bytes_left) return error.MalformedSection;
 
                             // first parse the local declarations
                             {
@@ -205,11 +208,11 @@ fn Parser(comptime ReaderType: type) type {
                                 var locals = std.AutoArrayHashMap(wasm.ValueType, u32).init(gpa);
                                 defer locals.deinit();
 
-                                const locals_len = try readLeb(u32, code_reader);
+                                const locals_len = try readLeb(u32, reader);
                                 var i: u32 = 0;
                                 while (i < locals_len) : (i += 1) {
-                                    const count = try readLeb(u32, code_reader);
-                                    const valtype = try readEnum(wasm.ValueType, code_reader);
+                                    const count = try readLeb(u32, reader);
+                                    const valtype = try readEnum(wasm.ValueType, reader);
 
                                     var result = try locals.getOrPut(valtype);
                                     if (result.found_existing) {
@@ -325,11 +328,10 @@ fn readInit(reader: anytype) !wasm.InitExpression {
 }
 
 fn assertEnd(reader: anytype) !void {
-    _ = reader.readByte() catch |err| switch (err) {
-        error.EndOfStream => return,
-        else => |e| return e,
-    };
-    return error.MalformedSection;
+    var buf: [1]u8 = undefined;
+    const len = try reader.read(&buf);
+    if (len != 0) return error.MalformedSection;
+    if (reader.context.bytes_left != 0) return error.MalformedSection;
 }
 
 fn buildInstruction(opcode: std.wasm.Opcode, gpa: *Allocator, reader: anytype) !wasm.Instruction {

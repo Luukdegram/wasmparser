@@ -134,6 +134,7 @@ pub const sections = struct {
     pub const Export = struct {
         name: []const u8,
         kind: ExternalType,
+        index: u32,
     };
 
     pub const Element = struct {

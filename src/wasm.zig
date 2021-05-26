@@ -8,9 +8,9 @@ pub const Value = union(ValueType) {
     f32: f32,
     f64: f64,
     /// Reference to another function regardless of their function type
-    funcref: indices.Func,
-    /// Reference to an al object (object from the embedder)
-    ref: u32,
+    funcref: indexes.Func,
+    /// Reference to an external object (object from the embedder)
+    externref: u32,
 };
 
 /// Value types for locals and globals
@@ -25,7 +25,7 @@ pub const NumType = enum(u8) {
 /// and ref references an object from the embedder.
 pub const RefType = enum(u8) {
     funcref = 0x70,
-    ref = 0x6F,
+    externref = 0x6F,
 };
 
 /// Represents the several types a wasm value can have
@@ -35,7 +35,7 @@ pub const ValueType = enum(u8) {
     f32 = @enumToInt(NumType.f32),
     f64 = @enumToInt(NumType.f64),
     funcref = @enumToInt(RefType.funcref),
-    ref = @enumToInt(RefType.ref),
+    externref = @enumToInt(RefType.externref),
 };
 
 /// Wasm module sections
@@ -57,7 +57,7 @@ pub const BlockType = enum(u8) {
     f32 = @enumToInt(ValueType.f32),
     f64 = @enumToInt(ValueType.f64),
     funcref = @enumToInt(RefType.funcref),
-    ref = @enumToInt(RefType.ref),
+    externref = @enumToInt(RefType.externref),
     empty = wasm.block_empty,
 };
 
@@ -70,7 +70,7 @@ pub const InitExpression = union(enum) {
     global_get: u32,
 };
 
-pub const indices = struct {
+pub const indexes = struct {
     pub const Type = enum(u32) { _ };
     pub const Func = enum(u32) { _ };
     pub const Table = enum(u32) { _ };
@@ -99,7 +99,7 @@ pub const sections = struct {
         kind: Kind,
 
         pub const Kind = union(ExternalType) {
-            function: indices.Type,
+            function: indexes.Type,
             table: struct {
                 reftype: RefType,
                 limits: Limits,
@@ -113,7 +113,7 @@ pub const sections = struct {
     };
 
     pub const Func = struct {
-        type_idx: indices.Type,
+        type_idx: indexes.Type,
     };
 
     pub const Table = struct {
@@ -138,17 +138,9 @@ pub const sections = struct {
     };
 
     pub const Element = struct {
-        index: indices.Table,
+        table_idx: indexes.Table,
         offset: InitExpression,
-        /// Element can be of different types so simply use u32 here rather than a
-        /// non-exhaustive enum
-        elements: []const u32,
-
-        pub const Kind = union(enum) {
-            func: struct {
-                init: InitExpression,
-            },
-        };
+        func_idxs: []const indexes.Func,
     };
 
     pub const Code = struct {
@@ -161,7 +153,7 @@ pub const sections = struct {
     };
 
     pub const Data = struct {
-        index: indices.Mem,
+        index: indexes.Mem,
         offset: InitExpression,
         data: []const u8,
     };
@@ -176,7 +168,7 @@ pub const Module = struct {
     memories: []const sections.Memory = &.{},
     globals: []const sections.Global = &.{},
     exports: []const sections.Export = &.{},
-    start: ?indices.Func = null,
+    start: ?indexes.Func = null,
     elements: []const sections.Element = &.{},
     code: []const sections.Code = &.{},
     data: []const sections.Data = &.{},

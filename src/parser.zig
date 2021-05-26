@@ -3,7 +3,6 @@ const wasm = @import("wasm.zig");
 const Allocator = std.mem.Allocator;
 const leb = std.leb;
 const meta = std.meta;
-const log = std.log.scoped(.parser);
 
 pub const Result = struct {
     module: wasm.Module,
@@ -134,7 +133,7 @@ fn Parser(comptime ReaderType: type) type {
 
                             const kind = try readEnum(wasm.ExternalType, reader);
                             import.kind = switch (kind) {
-                                .function => .{ .function = try readEnum(wasm.indices.Type, reader) },
+                                .function => .{ .function = try readEnum(wasm.indexes.Type, reader) },
                                 .memory => .{ .memory = try readLimits(reader) },
                                 .global => .{ .global = .{
                                     .valtype = try readEnum(wasm.ValueType, reader),
@@ -150,7 +149,7 @@ fn Parser(comptime ReaderType: type) type {
                     },
                     .function => {
                         for (try readVec(&module.functions, reader, gpa)) |*func| {
-                            func.type_idx = try readEnum(wasm.indices.Type, reader);
+                            func.type_idx = try readEnum(wasm.indexes.Type, reader);
                         }
                         try assertEnd(reader);
                     },
@@ -193,14 +192,26 @@ fn Parser(comptime ReaderType: type) type {
                         try assertEnd(reader);
                     },
                     .start => {
-                        module.start = try readEnum(wasm.indices.Func, reader);
+                        module.start = try readEnum(wasm.indexes.Func, reader);
                         try assertEnd(reader);
                     },
-                    .element => @panic("TODO - Implement parsing element section"),
+                    .element => {
+                        for (try readVec(&module.elements, reader, gpa)) |*elem| {
+                            elem.table_idx = try readEnum(wasm.indexes.Table, reader);
+                            elem.offset = try readInit(reader);
+
+                            for (try readVec(&elem.func_idxs, reader, gpa)) |*idx| {
+                                idx.* = try readEnum(wasm.indexes.Func, reader);
+                            }
+                        }
+                        try assertEnd(reader);
+                    },
                     .code => {
                         for (try readVec(&module.code, reader, gpa)) |*code| {
                             const body_len = try readLeb(u32, reader);
-                            if (body_len != reader.context.bytes_left) return error.MalformedSection;
+                            const start_len = reader.context.bytes_left;
+
+                            var code_reader = std.io.limitedReader(reader, body_len).reader();
 
                             // first parse the local declarations
                             {
@@ -208,11 +219,11 @@ fn Parser(comptime ReaderType: type) type {
                                 var locals = std.AutoArrayHashMap(wasm.ValueType, u32).init(gpa);
                                 defer locals.deinit();
 
-                                const locals_len = try readLeb(u32, reader);
+                                const locals_len = try readLeb(u32, code_reader);
                                 var i: u32 = 0;
                                 while (i < locals_len) : (i += 1) {
-                                    const count = try readLeb(u32, reader);
-                                    const valtype = try readEnum(wasm.ValueType, reader);
+                                    const count = try readLeb(u32, code_reader);
+                                    const valtype = try readEnum(wasm.ValueType, code_reader);
 
                                     var result = try locals.getOrPut(valtype);
                                     if (result.found_existing) {
@@ -221,18 +232,21 @@ fn Parser(comptime ReaderType: type) type {
                                         result.entry.value = count;
                                     }
                                 }
+
                                 const local_slice = try gpa.alloc(wasm.sections.Code.Local, locals.count());
                                 for (locals.items()) |entry, index| {
                                     local_slice[index] = .{ .valtype = entry.key, .count = entry.value };
                                 }
+
+                                code.locals = local_slice;
                             }
 
                             {
                                 var instructions = std.ArrayList(wasm.Instruction).init(gpa);
                                 defer instructions.deinit();
 
-                                while (readEnum(std.wasm.Opcode, reader)) |opcode| {
-                                    const instr = try buildInstruction(opcode, gpa, reader);
+                                while (readEnum(std.wasm.Opcode, code_reader)) |opcode| {
+                                    const instr = try buildInstruction(opcode, gpa, code_reader);
                                     try instructions.append(instr);
                                 } else |err| switch (err) {
                                     error.EndOfStream => {
@@ -244,12 +258,13 @@ fn Parser(comptime ReaderType: type) type {
 
                                 code.body = instructions.toOwnedSlice();
                             }
+                            try assertEnd(code_reader);
                         }
                         try assertEnd(reader);
                     },
                     .data => {
                         for (try readVec(&module.data, reader, gpa)) |*data| {
-                            data.index = try readEnum(wasm.indices.Mem, reader);
+                            data.index = try readEnum(wasm.indexes.Mem, reader);
                             data.offset = try readInit(reader);
 
                             const init_len = try readLeb(u32, reader);
@@ -305,10 +320,11 @@ fn readEnum(comptime T: type, reader: anytype) !T {
 }
 
 fn readLimits(reader: anytype) !wasm.Limits {
+    const flags = try readLeb(u1, reader);
     const min = try readLeb(u32, reader);
     return wasm.Limits{
         .min = min,
-        .max = if (min == 0) null else try readLeb(u32, reader),
+        .max = if (flags == 0) null else try readLeb(u32, reader),
     };
 }
 

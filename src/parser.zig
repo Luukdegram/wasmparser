@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 const leb = std.leb;
 const meta = std.meta;
 
-pub const Result = extern struct {
+pub const Result = struct {
     module: wasm.Module,
     arena: std.heap.ArenaAllocator.State,
 
@@ -38,12 +38,19 @@ pub const ParseError = error{
     MissingEndForBody,
     /// The size defined in the section code mismatches with the actual payload size.
     MalformedSection,
+    /// Stream has reached the end. Unreachable for caller and must be handled internally
+    /// by the parser.
+    EndOfStream,
+    /// Ran out of memory when allocating.
+    OutOfMemory,
 };
+
+const LebError = error{Overflow};
 
 fn Parser(comptime ReaderType: type) type {
     return struct {
         const Self = @This();
-        const Error = ReaderType.Error || ParseError;
+        const Error = ReaderType.Error || ParseError || LebError;
 
         reader: ReaderType,
 
@@ -54,7 +61,7 @@ fn Parser(comptime ReaderType: type) type {
         fn parseWasm(self: *Self, gpa: *Allocator) Error!Result {
             var arena = std.heap.ArenaAllocator.init(gpa);
             return Result{
-                .module = parseModule(&arena.allocater),
+                .module = try self.parseModule(&arena.allocator),
                 .arena = arena.state,
             };
         }
@@ -65,10 +72,10 @@ fn Parser(comptime ReaderType: type) type {
             var wasm_version: [4]u8 = undefined;
 
             try self.reader.readNoEof(&magic_bytes);
-            if (!std.mem.eql(u8, &magic_bytes, std.wasm.magic)) return error.InvalidMagicByte;
+            if (!std.mem.eql(u8, &magic_bytes, &std.wasm.magic)) return error.InvalidMagicByte;
 
             try self.reader.readNoEof(&wasm_version);
-            if (!std.mem.eql(u8, &wasm_version, std.wasm.version)) return error.InvalidWasmVersion;
+            if (!std.mem.eql(u8, &wasm_version, &std.wasm.version)) return error.InvalidWasmVersion;
         }
 
         fn parseModule(self: *Self, gpa: *Allocator) Error!wasm.Module {
@@ -87,25 +94,25 @@ fn Parser(comptime ReaderType: type) type {
                             // than read every byte individually as that's slow.
                             const name_len = try readLeb(u32, reader);
                             const name = try gpa.alloc(u8, name_len);
-                            custom.name = .{ .data = name.ptr, .len = name_len };
+                            custom.name = name;
                             try reader.readNoEof(name);
 
                             const data_len = len - name_len;
                             const data = try gpa.alloc(u8, data_len);
-                            custom.data = .{ .data = data.ptr, .len = data_len };
+                            custom.data = data;
                             try reader.readNoEof(data);
                         }
                         try assertEnd(reader);
                     },
                     .type => {
                         for (try readVec(&module.types, reader, gpa)) |*type_val| {
-                            if (try reader.readByte() != std.wasm.function_type) return error.ExpectedFuncType;
+                            if ((try reader.readByte()) != std.wasm.function_type) return error.ExpectedFuncType;
 
                             for (try readVec(&type_val.params, reader, gpa)) |*param| {
                                 param.* = try readEnum(wasm.ValueType, reader);
                             }
 
-                            for (try readVec(&type_val.results, reader, gpa)) |*result| {
+                            for (try readVec(&type_val.returns, reader, gpa)) |*result| {
                                 result.* = try readEnum(wasm.ValueType, reader);
                             }
                         }
@@ -115,33 +122,33 @@ fn Parser(comptime ReaderType: type) type {
                         for (try readVec(&module.imports, reader, gpa)) |*import| {
                             const module_len = try readLeb(u32, reader);
                             const module_name = try gpa.alloc(u8, module_len);
-                            import.module = .{ .data = module_name.ptr, .len = module_len };
+                            import.module = module_name;
                             try reader.readNoEof(module_name);
 
                             const name_len = try readLeb(u32, reader);
                             const name = try gpa.alloc(u8, name_len);
-                            import.name = .{ .data = name.ptr, .len = name_len };
+                            import.name = name;
                             try reader.readNoEof(module_name);
 
-                            const kind = try readEnum(wasm.sections.Import.Kind, reader);
+                            const kind = try readEnum(wasm.ExternalType, reader);
                             import.kind = switch (kind) {
-                                .function => .{ .function = try readEnum(wasm.ValueType, reader) },
-                                .memory => .{ .limits = try readLimits(reader) },
+                                .function => .{ .function = try readEnum(wasm.indices.Type, reader) },
+                                .memory => .{ .memory = try readLimits(reader) },
                                 .global => .{ .global = .{
                                     .valtype = try readEnum(wasm.ValueType, reader),
-                                    .mutable = (try reader.readByte() == 0x01),
+                                    .mutable = (try reader.readByte()) == 0x01,
                                 } },
-                                .table => .{
+                                .table => .{ .table = .{
                                     .reftype = try readEnum(wasm.RefType, reader),
                                     .limits = try readLimits(reader),
-                                },
+                                } },
                             };
                         }
                         try assertEnd(reader);
                     },
                     .function => {
                         for (try readVec(&module.functions, reader, gpa)) |*func| {
-                            func.* = try readEnum(wasm.indices.Type, reader);
+                            func.type_idx = try readEnum(wasm.indices.Type, reader);
                         }
                         try assertEnd(reader);
                     },
@@ -164,7 +171,7 @@ fn Parser(comptime ReaderType: type) type {
                         for (try readVec(&module.globals, reader, gpa)) |*global| {
                             global.* = .{
                                 .valtype = try readEnum(wasm.ValueType, reader),
-                                .mutable = (try reader.readByte() == 0x01),
+                                .mutable = (try reader.readByte()) == 0x01,
                                 .init = try readInit(reader),
                             };
                         }
@@ -174,9 +181,11 @@ fn Parser(comptime ReaderType: type) type {
                         for (try readVec(&module.exports, reader, gpa)) |*exp| {
                             const name_len = try readLeb(u32, reader);
                             const name = try gpa.alloc(u8, name_len);
-                            exp.name = .{ .data = name.ptr, .len = name_len };
                             try reader.readNoEof(name);
-                            exp.kind = try readEnum(wasm.ExternalType, reader);
+                            exp.* = .{
+                                .name = name,
+                                .kind = try readEnum(wasm.ExternalType, reader),
+                            };
                         }
                         try assertEnd(reader);
                     },
@@ -188,12 +197,12 @@ fn Parser(comptime ReaderType: type) type {
                     .code => {
                         for (try readVec(&module.code, reader, gpa)) |*code| {
                             const body_len = try readLeb(u32, reader);
-                            var code_reader = std.io.LimitedReader(reader, body_len).reader();
+                            var code_reader = std.io.limitedReader(reader, body_len).reader();
 
                             // first parse the local declarations
                             {
                                 // we compress the locals and save per valtype the count
-                                var locals = std.AutoHashMap(wasm.ValueType, u32).init(gpa);
+                                var locals = std.AutoArrayHashMap(wasm.ValueType, u32).init(gpa);
                                 defer locals.deinit();
 
                                 const locals_len = try readLeb(u32, code_reader);
@@ -210,8 +219,8 @@ fn Parser(comptime ReaderType: type) type {
                                     }
                                 }
                                 const local_slice = try gpa.alloc(wasm.sections.Code.Local, locals.count());
-                                for (locals.items()) |entry, i| {
-                                    local_slice[i] = .{ .valtype = entry.key, .count = entry.value };
+                                for (locals.items()) |entry, index| {
+                                    local_slice[index] = .{ .valtype = entry.key, .count = entry.value };
                                 }
                             }
 
@@ -261,33 +270,33 @@ fn Parser(comptime ReaderType: type) type {
 
 /// First reads the count from the reader and then allocate
 /// a slice of ptr child's element type.
-fn readVec(ptr: anytype, reader: anytype, gpa: *Allocator) ![]ElementType(ptr) {
+fn readVec(ptr: anytype, reader: anytype, gpa: *Allocator) ![]ElementType(@TypeOf(ptr)) {
     const len = try readLeb(u32, reader);
-    const slice = try gpa.alloc(ElementType(ptr), len);
+    const slice = try gpa.alloc(ElementType(@TypeOf(ptr)), len);
     ptr.* = slice;
     return slice;
 }
 
-fn ElementType(ptr: anytype) type {
-    return meta.Child(meta.Child(@TypeOf(ptr)));
+fn ElementType(comptime ptr: type) type {
+    return meta.Child(meta.Child(ptr));
 }
 
 /// Uses either `readILEB128` or `readULEB128` depending on the
 /// signedness of the given type `T`.
 /// Asserts `T` is an integer.
-fn readLeb(comptime T: type, reader: anytype) T {
-    if (std.meta.trait.isSignedInt(T)) {
-        return leb.readILEB128(T, reader);
+fn readLeb(comptime T: type, reader: anytype) !T {
+    if (comptime std.meta.trait.isSignedInt(T)) {
+        return try leb.readILEB128(T, reader);
     } else {
-        return leb.readULEB128(T, reader);
+        return try leb.readULEB128(T, reader);
     }
 }
 
 /// Reads an enum type from the given reader.
 /// Asserts `T` is an enum
-fn readEnum(comptime T: type, reader: anytype) T {
+fn readEnum(comptime T: type, reader: anytype) !T {
     switch (@typeInfo(T)) {
-        .Enum => |enum_type| return readLeb(enum_type.tag_type, reader),
+        .Enum => |enum_type| return @intToEnum(T, try readLeb(enum_type.tag_type, reader)),
         else => @compileError("T must be an enum. Instead was given type " ++ @typeName(T)),
     }
 }
@@ -303,14 +312,15 @@ fn readLimits(reader: anytype) !wasm.Limits {
 fn readInit(reader: anytype) !wasm.InitExpression {
     const opcode = try reader.readByte();
     const init: wasm.InitExpression = switch (@intToEnum(std.wasm.Opcode, opcode)) {
-        .i32_const => .{ .i32_const = try readLeb(u32, reader) },
-        .i64_const => .{ .i64_const = try readLeb(u64, reader) },
+        .i32_const => .{ .i32_const = try readLeb(i32, reader) },
+        .i64_const => .{ .i64_const = try readLeb(i64, reader) },
         .f32_const => .{ .f32_const = @bitCast(f32, try readLeb(u32, reader)) },
         .f64_const => .{ .f64_const = @bitCast(f64, try readLeb(u64, reader)) },
         .global_get => .{ .global_get = try readLeb(u32, reader) },
+        else => unreachable,
     };
 
-    if (try readEnum(std.wasm.Opcode, reader) != .end) return error.MissingEndForExpression;
+    if ((try readEnum(std.wasm.Opcode, reader)) != .end) return error.MissingEndForExpression;
     return init;
 }
 
@@ -343,8 +353,8 @@ fn buildInstruction(opcode: std.wasm.Opcode, gpa: *Allocator, reader: anytype) !
         .local_tee,
         .global_get,
         .global_set,
-        wasm.Table.opcode(.get),
-        wasm.Table.opcode(.set),
+        wasm.table_get,
+        wasm.table_set,
         .memory_size,
         .memory_grow,
         => .{ .u32 = try readLeb(u32, reader) },
@@ -379,7 +389,6 @@ fn buildInstruction(opcode: std.wasm.Opcode, gpa: *Allocator, reader: anytype) !
         .br_table => blk: {
             const len = try readLeb(u32, reader);
             const list = try gpa.alloc(u32, len);
-            errdefer list.deinit();
 
             for (list) |*item| {
                 item.* = try readLeb(u32, reader);
@@ -392,14 +401,14 @@ fn buildInstruction(opcode: std.wasm.Opcode, gpa: *Allocator, reader: anytype) !
         @intToEnum(std.wasm.Opcode, 0x1C) => blk: {
             const len = try readLeb(u32, reader);
             const list = try gpa.alloc(wasm.ValueType, len);
-            errdefer list.deinit();
+            errdefer gpa.free(list);
 
             for (list) |*item| {
                 item.* = try readEnum(wasm.ValueType, reader);
             }
             break :blk .{ .multi_valtype = .{ .data = list.ptr, .len = len } };
         },
-        wasm.need_secondary => blk: {
+        wasm.need_secondary => @as(wasm.Instruction.InstrValue, blk: {
             const secondary = try readEnum(wasm.SecondaryOpcode, reader);
             instr.secondary = secondary;
             switch (secondary) {
@@ -423,12 +432,12 @@ fn buildInstruction(opcode: std.wasm.Opcode, gpa: *Allocator, reader: anytype) !
                 } },
                 else => break :blk .{ .u32 = try readLeb(u32, reader) },
             }
-        },
+        }),
         .i32_const => .{ .i32 = try readLeb(i32, reader) },
         .i64_const => .{ .i64 = try readLeb(i64, reader) },
-        .f32_const => .{ .f32 = try readLeb(f32, reader) },
-        .f64_const => .{ .f64 = try readLeb(f64, reader) },
-        else => .none,
+        .f32_const => .{ .f32 = @bitCast(f32, try readLeb(u32, reader)) },
+        .f64_const => .{ .f64 = @bitCast(f64, try readLeb(u64, reader)) },
+        else => .{ .none = {} },
     };
 
     return instr;

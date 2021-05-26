@@ -1,16 +1,6 @@
 const std = @import("std");
 const wasm = std.wasm;
 
-/// Wasm value that lives in the global section.
-/// Cannot be modified when `mutable` is set to false.
-pub const Global = struct {
-    mutable: bool = false,
-    value: Value,
-};
-
-/// Wasm value that lives on the stack.
-pub const Local = Value;
-
 /// Wasm union that contains the value of each possible `ValueType`
 pub const Value = union(ValueType) {
     i32: i32,
@@ -166,7 +156,7 @@ pub const sections = struct {
             count: u32,
         };
         locals: []const Local,
-        body: []const wasm.Opcode,
+        body: []const Instruction,
     };
 
     pub const Data = struct {
@@ -177,34 +167,36 @@ pub const sections = struct {
 };
 
 pub const Module = struct {
-    custom: []const sections.Custom = .{},
-    types: []const sections.Type = .{},
-    imports: []const sections.Import = .{},
-    functions: []const sections.Func = .{},
-    tables: []const sections.Table = .{},
-    memories: []const sections.Memory = .{},
-    globals: []const sections.Global = .{},
-    exports: []const sections.Export = .{},
+    custom: []const sections.Custom = &.{},
+    types: []const sections.Type = &.{},
+    imports: []const sections.Import = &.{},
+    functions: []const sections.Func = &.{},
+    tables: []const sections.Table = &.{},
+    memories: []const sections.Memory = &.{},
+    globals: []const sections.Global = &.{},
+    exports: []const sections.Export = &.{},
     start: ?indices.Func = null,
-    elements: []const sections.Element = .{},
-    code: []const sections.Code = .{},
-    data: []const sections.Data = .{},
+    elements: []const sections.Element = &.{},
+    code: []const sections.Code = &.{},
+    data: []const sections.Data = &.{},
 };
 
 pub const Instruction = struct {
     opcode: wasm.Opcode,
     secondary: ?SecondaryOpcode = null,
-    value: union {
+    value: InstrValue,
+
+    pub const InstrValue = union {
         none: void,
         u32: u32,
         i32: i32,
         i64: i64,
         f32: f32,
         f64: f64,
-        valtype: ValueType,
+        reftype: RefType,
         blocktype: BlockType,
         multi_valtype: struct {
-            valtype: [*]ValueType,
+            data: [*]ValueType,
             len: u32,
         },
         multi: struct {
@@ -215,7 +207,7 @@ pub const Instruction = struct {
             data: [*]u32,
             len: u32,
         },
-    },
+    };
 };
 
 /// Secondary opcode belonging to primary opcodes
@@ -243,13 +235,5 @@ pub const SecondaryOpcode = enum(u8) {
 };
 
 pub const need_secondary = @intToEnum(wasm.Opcode, 0xFC);
-
-/// Temporary enum until std.wasm.Opcode contains those
-pub const Table = enum(u8) {
-    get = 0x25,
-    set = 0x26,
-
-    pub fn opcode(self: Table) wasm.Opcode {
-        return @intToEnum(wasm.Opcode, @enumToInt(self));
-    }
-};
+pub const table_get = @intToEnum(wasm.Opcode, 0x25);
+pub const table_set = @intToEnum(wasm.Opcode, 0x26);

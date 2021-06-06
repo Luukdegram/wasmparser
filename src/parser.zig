@@ -261,6 +261,10 @@ fn Parser(comptime ReaderType: type) type {
                         }
                         try assertEnd(reader);
                     },
+                    .module => @panic("TODO: Implement 'module' section"),
+                    .instance => @panic("TODO: Implement 'instance' section"),
+                    .alias => @panic("TODO: Implement 'alias' section"),
+                    _ => |id| std.log.scoped(.wasmparser).debug("Found unimplemented section with id '{d}'", .{id}),
                 }
             } else |err| switch (err) {
                 error.EndOfStream => {},
@@ -282,7 +286,7 @@ fn readVec(ptr: anytype, reader: anytype, gpa: *Allocator) ![]ElementType(@TypeO
 }
 
 fn ElementType(comptime ptr: type) type {
-    return meta.Child(meta.Child(ptr));
+    return meta.Elem(meta.Child(ptr));
 }
 
 /// Uses either `readILEB128` or `readULEB128` depending on the
@@ -318,9 +322,6 @@ fn readInit(reader: anytype) !wasm.InitExpression {
     const opcode = try reader.readByte();
     const init: wasm.InitExpression = switch (@intToEnum(std.wasm.Opcode, opcode)) {
         .i32_const => .{ .i32_const = try readLeb(i32, reader) },
-        .i64_const => .{ .i64_const = try readLeb(i64, reader) },
-        .f32_const => .{ .f32_const = @bitCast(f32, try readLeb(u32, reader)) },
-        .f64_const => .{ .f64_const = @bitCast(f64, try readLeb(u64, reader)) },
         .global_get => .{ .global_get = try readLeb(u32, reader) },
         else => unreachable,
     };

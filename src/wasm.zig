@@ -1,5 +1,6 @@
 const std = @import("std");
 const wasm = std.wasm;
+const TypeInfo = std.builtin.TypeInfo;
 
 /// Wasm union that contains the value of each possible `ValueType`
 pub const Value = union(ValueType) {
@@ -29,17 +30,45 @@ pub const RefType = enum(u8) {
 };
 
 /// Represents the several types a wasm value can have
-pub const ValueType = enum(u8) {
-    i32 = @enumToInt(NumType.i32),
-    i64 = @enumToInt(NumType.i64),
-    f32 = @enumToInt(NumType.f32),
-    f64 = @enumToInt(NumType.f64),
-    funcref = @enumToInt(RefType.funcref),
-    externref = @enumToInt(RefType.externref),
-};
+pub const ValueType = MergedEnums(NumType, RefType);
 
-/// Wasm module sections
-pub const Section = wasm.Section;
+/// Wasm sections, including proposals.
+/// Section is built using `std.wasm.Section` and adding
+/// proposed sections to it.
+///
+/// Note: This version is non-exhaustive to continue parsing
+/// when a new section is proposed but not yet implemented.
+pub const Section = MergedEnum(wasm.Section, &.{
+    .{ .name = "module", .value = 14 },
+    .{ .name = "instance", .value = 15 },
+    .{ .name = "alias", .value = 16 },
+});
+
+/// Merges a given enum type and a slice of `EnumField` into a new enum type
+fn MergedEnum(comptime T: type, comptime fields: []const TypeInfo.EnumField) type {
+    if (@typeInfo(T) != .Enum) {
+        @compileError("Given type 'T' must be an enum type but instead was given: " ++ @typeName(T));
+    }
+
+    const old_fields = std.meta.fields(T);
+    var new_fields: [fields.len + old_fields.len]TypeInfo.EnumField = undefined;
+    std.mem.copy(TypeInfo.EnumField, &new_fields, old_fields);
+    std.mem.copy(TypeInfo.EnumField, new_fields[old_fields.len..], fields);
+
+    return @Type(.{ .Enum = .{
+        .layout = .Auto,
+        .tag_type = u8,
+        .fields = &new_fields,
+        .decls = &.{},
+        .is_exhaustive = false,
+    } });
+}
+
+/// Merges two enums into a single enum type
+fn MergedEnums(comptime T: type, comptime Z: type) type {
+    return MergedEnum(T, std.meta.fields(Z));
+}
+
 /// External types that can be imported or exported between to/from the host
 pub const ExternalType = wasm.ExternalKind;
 
@@ -51,21 +80,13 @@ pub const Limits = struct {
 
 /// The type of block types, similarly to `ValueType` with the difference being
 /// that it adds an additional type 'empty' which is used for blocks with no return value.
-pub const BlockType = enum(u8) {
-    i32 = @enumToInt(ValueType.i32),
-    i64 = @enumToInt(ValueType.i64),
-    f32 = @enumToInt(ValueType.f32),
-    f64 = @enumToInt(ValueType.f64),
-    funcref = @enumToInt(RefType.funcref),
-    externref = @enumToInt(RefType.externref),
-    empty = wasm.block_empty,
-};
+pub const BlockType = MergedEnum(ValueType, &.{.{
+    .name = "block_empty",
+    .value = wasm.block_empty,
+}});
 
 pub const InitExpression = union(enum) {
     i32_const: i32,
-    i64_const: i64,
-    f32_const: f32,
-    f64_const: f64,
     /// Uses the value of a global at index `global_get`
     global_get: u32,
 };

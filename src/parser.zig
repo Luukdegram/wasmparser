@@ -215,30 +215,16 @@ fn Parser(comptime ReaderType: type) type {
 
                             // first parse the local declarations
                             {
-                                // we compress the locals and save per valtype the count
-                                var locals = std.AutoArrayHashMap(wasm.ValueType, u32).init(gpa);
-                                defer locals.deinit();
-
                                 const locals_len = try readLeb(u32, code_reader);
-                                var i: u32 = 0;
-                                while (i < locals_len) : (i += 1) {
-                                    const count = try readLeb(u32, code_reader);
-                                    const valtype = try readEnum(wasm.ValueType, code_reader);
-
-                                    var result = try locals.getOrPut(valtype);
-                                    if (result.found_existing) {
-                                        result.entry.value += count;
-                                    } else {
-                                        result.entry.value = count;
-                                    }
+                                const locals = try gpa.alloc(wasm.sections.Code.Local, locals_len);
+                                for (locals) |*local| {
+                                    local.* = .{
+                                        .count = try readLeb(u32, code_reader),
+                                        .valtype = try readEnum(wasm.ValueType, code_reader),
+                                    };
                                 }
 
-                                const local_slice = try gpa.alloc(wasm.sections.Code.Local, locals.count());
-                                for (locals.items()) |entry, index| {
-                                    local_slice[index] = .{ .valtype = entry.key, .count = entry.value };
-                                }
-
-                                code.locals = local_slice;
+                                code.locals = locals;
                             }
 
                             {

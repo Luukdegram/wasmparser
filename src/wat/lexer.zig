@@ -5,15 +5,21 @@ const std = @import("std");
 pub const Token = struct {
     /// Tag representing this token
     tag: Tag,
-    /// Index in the source where the token starts
-    start: u32,
-    /// Index in the source where the token ends
-    end: u32,
+    /// The location in the source code
+    loc: Loc,
+
+    const Loc = struct {
+        /// Index in the source where the token starts
+        start: u32,
+        /// Index in the source where the token ends
+        end: u32,
+    };
 
     pub const Tag = enum {
         block_comment,
         eof,
         float,
+        identifier,
         integer,
         keyword_data,
         keyword_elem,
@@ -41,6 +47,7 @@ pub const Token = struct {
                 .block_comment,
                 .eof,
                 .float,
+                .identifier,
                 .integer,
                 .line_comment,
                 .opcode,
@@ -98,21 +105,92 @@ pub const Lexer = struct {
     /// The source we're iterating over
     buffer: []const u8,
     /// The current index into `buffer`
-    index: usize,
+    index: u32,
+
+    pub const State = enum {
+        block_comment,
+        block_comment_end,
+        eof,
+        float_literal,
+        hex_literal,
+        identifier,
+        integer_literal,
+        invalid,
+        l_paren,
+        r_paren,
+        start,
+    };
 
     /// Initializes a new `Lexer` and sets the `index` while correctly
     /// skipping the UTF-8 BOM.
     pub fn init(buffer: []const u8) Lexer {
         // skip the UTF-8 BOM
-        const index = if (std.mem.startsWith(u8, buffer, "\xEF\xBB\xBF")) 3 else @as(usize, 0);
+        const index = if (std.mem.startsWith(u8, buffer, "\xEF\xBB\xBF")) 3 else @as(u32, 0);
         return .{ .buffer = buffer, .index = index };
     }
 
     /// Reads the next bytes and returns a `Token` when successful
-    pub fn next(self: *Lexer) ?Token {}
+    pub fn next(self: *Lexer) ?Token {
+        var state: State = .start;
+        var result: Token = .{
+            .tag = .eof,
+            .loc = .{
+                .start = self.index,
+                .end = undefined,
+            },
+        };
+
+        while (self.index < self.buffer.len) : (self.index += 1) {
+            const c = self.buffer[self.index];
+            switch (state) {
+                .start => switch (c) {
+                    ' ', '\n', 't', '\r' => {
+                        result.loc.start = self.index + 1;
+                    },
+                    '(' => state = .l_paren,
+                    else => @panic("TODO"),
+                },
+                .l_paren => switch (c) {
+                    'a'...'z' => {
+                        state = .identifier;
+                        result.tag = .identifier;
+                        result.loc.start = self.index;
+                    },
+                    ';' => {
+                        state = .block_comment;
+                        result.tag = .block_comment;
+                    },
+                    '(' => {},
+                    else => @panic("TODO"),
+                },
+                .identifier => switch (c) {
+                    'a'...'z' => {},
+                    else => {
+                        std.debug.print("Ident: {s}\n", .{self.buffer[result.loc.start..self.index]});
+                        if (Token.findKeyword(self.buffer[result.loc.start..self.index])) |tag| {
+                            result.tag = tag;
+                        }
+                        break;
+                    },
+                },
+                .block_comment => switch (c) {
+                    ';' => state = .block_comment_end,
+                    else => {},
+                },
+                .block_comment_end => switch (c) {
+                    ')' => break,
+                    else => @panic("TODO"),
+                },
+                else => @panic("TODO"),
+            }
+        }
+
+        result.loc.end = self.index;
+        return result;
+    }
 
     /// Returns true when given `char` is part of 7-bit ASCII subset of Unicode.
-    fn isChar(char: u8) bool {
+    fn isLetter(char: u8) bool {
         return std.ascii.isASCII(char);
     }
 
@@ -120,4 +198,45 @@ pub const Lexer = struct {
     fn isDigit(char: u8) bool {
         return std.ascii.isDigit(char);
     }
+
+    fn skipWhitespace(self: *Lexer) void {
+        while (true) {
+            const c = self.buffer[self.index];
+            if (!std.ascii.isSpace(c)) break;
+            self.index += 1;
+        }
+    }
+
+    /// Parses an identifier and returns a `Token.Loc` for its location
+    fn parseIdentifier(self: *Lexer) Token.Loc {
+        const old_pos = self.index;
+        while (true) {
+            const c = self.buffer[self.index];
+            if (!isLetter(c)) break;
+            self.index += 1;
+        }
+
+        return .{
+            .start = old_pos,
+            .end = self.index,
+        };
+    }
 };
+
+fn runTestInput(input: []const u8, expected_token_tags: []const Token.Tag) !void {
+    const testing = std.testing;
+    var lexer = Lexer.init(input);
+
+    for (expected_token_tags) |tag, index| {
+        const token = lexer.next() orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(tag, token.tag);
+    }
+}
+
+test "Basic module" {
+    const input =
+        \\(module)
+    ;
+
+    try runTestInput(input, &.{.keyword_module});
+}

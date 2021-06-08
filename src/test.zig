@@ -65,3 +65,8 @@ test "tests/call_indirect.wasm" {
         },
     });
 }
+
+// also test lexer
+test {
+    _ = @import("wat/lexer.zig");
+}

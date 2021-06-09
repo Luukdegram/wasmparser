@@ -71,7 +71,7 @@ pub const Token = struct {
                 .keyword_table => "table",
                 .keyword_type => "type",
                 .l_paren => "(",
-                .r_paren => "}",
+                .r_paren => ")",
             };
         }
 

@@ -123,8 +123,10 @@ pub const Lexer = struct {
         line_comment,
         l_paren,
         r_paren,
+        sign,
         start,
         string_literal,
+        zero,
     };
 
     /// Initializes a new `Lexer` and sets the `index` while correctly
@@ -137,6 +139,7 @@ pub const Lexer = struct {
 
     /// Reads the next bytes and returns a `Token` when successful
     pub fn next(self: *Lexer) ?Token {
+        if (self.index >= self.buffer.len) return null;
         var state: State = .start;
         var result: Token = .{
             .tag = .eof,
@@ -167,13 +170,19 @@ pub const Lexer = struct {
                         state = .identifier;
                         result.tag = .identifier;
                     },
-                    ';' => {
-                        state = .comment_start;
+                    ';' => state = .comment_start,
+                    '"' => state = .string_literal,
+                    '0' => {
+                        state = .zero;
+                        result.tag = .integer;
                     },
-                    '"' => {
-                        state = .string_literal;
-                        result.tag = .string;
-                        result.loc.start = self.index + 1;
+                    '1'...'9' => {
+                        state = .integer_literal;
+                        result.tag = .integer;
+                    },
+                    '+', '-' => {
+                        state = .sign;
+                        result.tag = .integer;
                     },
                     else => unreachable,
                 },
@@ -196,7 +205,30 @@ pub const Lexer = struct {
                 },
                 .line_comment => if (c == '\n') break,
                 .identifier => switch (c) {
-                    'a'...'z', '0'...'9', 'A'...'Z' => {},
+                    '0'...'9',
+                    'a'...'z',
+                    'A'...'Z',
+                    '!',
+                    '#',
+                    '$',
+                    '&',
+                    '*',
+                    '+',
+                    '-',
+                    '.',
+                    '/',
+                    ';',
+                    '<',
+                    '=',
+                    '>',
+                    '@',
+                    '\\',
+                    '^',
+                    '_',
+                    '`',
+                    '|',
+                    '~',
+                    => {},
                     else => {
                         if (Token.findKeyword(self.buffer[result.loc.start..self.index])) |tag| {
                             result.tag = tag;
@@ -204,18 +236,49 @@ pub const Lexer = struct {
                         break;
                     },
                 },
-                .string_literal => switch (c) {
-                    'a'...'z', '\n', '\t', '\\', '\'' => {},
-                    '"' => {
-                        result.loc.end = self.index;
-                        self.index += 1;
-                        return result;
+                .string_literal => {
+                    return Token{
+                        .tag = .string,
+                        .loc = self.parseStringLiteral(),
+                    };
+                },
+                .zero => switch (c) {
+                    '0'...'9', '_' => state = .integer_literal,
+                    'x', 'X' => state = .hex_literal,
+                    '.' => {
+                        result.tag = .float;
+                        state = .float_literal;
                     },
-                    else => |maybe_hex| if (!std.ascii.isXDigit(maybe_hex)) {
+                    ' ', '\n', '\t' => break,
+                    else => {
                         result.tag = .invalid;
                         break;
                     },
                 },
+                .sign => switch (c) {
+                    '0' => state = .zero,
+                    '1'...'9' => state = .integer_literal,
+                    else => {
+                        result.tag = .invalid;
+                        break;
+                    },
+                },
+                .integer_literal => switch (c) {
+                    '0'...'9', '_' => {},
+                    '.' => {
+                        result.tag = .float;
+                        state = .float_literal;
+                    },
+                    else => break,
+                },
+                .hex_literal => switch (c) {
+                    '0'...'9',
+                    'a'...'z',
+                    'A'...'Z',
+                    => {},
+                    else => break,
+                },
+                .float_literal => @panic("TODO: float literals"),
                 else => unreachable,
             }
         }
@@ -224,35 +287,25 @@ pub const Lexer = struct {
         return result;
     }
 
-    /// Returns true when given `char` is part of 7-bit ASCII subset of Unicode.
-    fn isLetter(char: u8) bool {
-        return std.ascii.isASCII(char);
-    }
-
     /// Returns true when given `char` is digit and therefore possible an integer_literal
     fn isDigit(char: u8) bool {
         return std.ascii.isDigit(char);
     }
 
-    fn skipWhitespace(self: *Lexer) void {
-        while (true) {
-            const c = self.buffer[self.index];
-            if (!std.ascii.isSpace(c)) break;
-            self.index += 1;
-        }
-    }
+    /// Parses a string literal and returns a `Token.Loc` for its location
+    /// within the source.
+    fn parseStringLiteral(self: *Lexer) Token.Loc {
+        const start = self.index;
+        while (self.index < self.buffer.len) {
+            const char = self.buffer[self.index];
+            if (char == '"') break;
 
-    /// Parses an identifier and returns a `Token.Loc` for its location
-    fn parseIdentifier(self: *Lexer) Token.Loc {
-        const old_pos = self.index;
-        while (true) {
-            const c = self.buffer[self.index];
-            if (!isLetter(c)) break;
-            self.index += 1;
+            const length = std.unicode.utf8ByteSequenceLength(char) catch 1;
+            self.index += length;
         }
-
+        defer self.index += 1;
         return .{
-            .start = old_pos,
+            .start = start,
             .end = self.index,
         };
     }
@@ -266,6 +319,8 @@ fn runTestInput(input: []const u8, expected_token_tags: []const Token.Tag) !void
         const token = lexer.next() orelse return error.TestUnexpectedResult;
         try testing.expectEqual(tag, token.tag);
     }
+
+    try testing.expectEqual(@as(?Token, null), lexer.next());
 }
 
 test "Module" {
@@ -403,7 +458,7 @@ test "Comment" {
     inline for (cases) |case| {
         var lexer = Lexer.init(case[0]);
 
-        for (@as([]const Token.Tag, case[1])) |tag, index| {
+        for (@as([]const Token.Tag, case[1])) |tag| {
             const token = lexer.next() orelse return error.TestUnexpectedResult;
             try testing.expectEqual(tag, token.tag);
 
@@ -429,13 +484,19 @@ test "String" {
             \\a\tdd
             ,
         },
+        .{
+            \\ (func "te😀st")
+            ,
+            &.{ .l_paren, .keyword_func, .string, .r_paren },
+            "te😀st",
+        },
     };
 
     const testing = std.testing;
     inline for (cases) |case| {
         var lexer = Lexer.init(case[0]);
 
-        for (@as([]const Token.Tag, case[1])) |tag, index| {
+        for (@as([]const Token.Tag, case[1])) |tag| {
             const token = lexer.next() orelse return error.TestUnexpectedResult;
             try testing.expectEqual(tag, token.tag);
 
@@ -443,5 +504,109 @@ test "String" {
                 try testing.expectEqualStrings(case[2], case[0][token.loc.start..token.loc.end]);
             }
         }
+        try testing.expectEqual(@as(?Token, null), lexer.next());
     }
+}
+
+test "Integer" {
+    const cases = .{
+        .{
+            \\ const.i32 5
+            ,
+            &.{ .identifier, .integer },
+            "5",
+        },
+        .{
+            \\ const.i32 0x50
+            ,
+            &.{ .identifier, .integer },
+            "0x50",
+        },
+        .{
+            \\ +0x50
+            ,
+            &.{.integer},
+            "+0x50",
+        },
+        .{
+            \\ +001
+            ,
+            &.{.integer},
+            "+001",
+        },
+        .{
+            \\ -10
+            ,
+            &.{.integer},
+            "-10",
+        },
+    };
+
+    const testing = std.testing;
+    inline for (cases) |case| {
+        var lexer = Lexer.init(case[0]);
+
+        for (@as([]const Token.Tag, case[1])) |tag, i| {
+            const token = lexer.next() orelse return error.TestUnexpectedResult;
+            try testing.expectEqual(tag, token.tag);
+
+            if (token.tag == .integer) {
+                try testing.expectEqualStrings(case[2], case[0][token.loc.start..token.loc.end]);
+            }
+        }
+
+        try testing.expectEqual(@as(?Token, null), lexer.next());
+    }
+}
+
+test "Float" {
+    const cases = .{
+        .{
+            \\ const.f32 0
+            ,
+            &.{ .identifier, .integer },
+            "0",
+        },
+        .{
+            \\ const.f32 0.1
+            ,
+            &.{ .identifier, .float },
+            "0.1",
+        },
+        .{
+            \\ +124.20
+            ,
+            &.{.float},
+            "+124.20",
+        },
+        .{
+            \\ -0.0e0
+            ,
+            &.{.float},
+            "-0.0e0",
+        },
+        .{
+            \\ 0x1.921fb6p+2
+            ,
+            &.{.float},
+            "0x1.921fb6p+2",
+        },
+    };
+
+    //TODO
+    const testing = std.testing;
+    // inline for (cases) |case| {
+    //     var lexer = Lexer.init(case[0]);
+
+    //     for (@as([]const Token.Tag, case[1])) |tag, i| {
+    //         const token = lexer.next() orelse return error.TestUnexpectedResult;
+    //         try testing.expectEqual(tag, token.tag);
+
+    //         if (token.tag == .integer) {
+    //             try testing.expectEqualStrings(case[2], case[0][token.loc.start..token.loc.end]);
+    //         }
+    //     }
+
+    //     try testing.expectEqual(@as(?Token, null), lexer.next());
+    // }
 }

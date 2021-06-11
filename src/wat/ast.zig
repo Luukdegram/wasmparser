@@ -75,8 +75,12 @@ pub const Node = struct {
     /// Information to any other nodes it may hold information to.
     data: Data,
 
+    /// Represents an index into a node list
     pub const Index = u32;
 
+    /// Data can contain indexes into the node list itself,
+    /// or into a seperate `extra_data` list where it represents
+    /// the start and end index of the slice into the list.
     pub const Data = struct {
         lhs: Index,
         rhs: Index,

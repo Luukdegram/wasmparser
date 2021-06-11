@@ -17,7 +17,6 @@ pub const Token = struct {
 
     pub const Tag = enum {
         block_comment,
-        eof,
         float,
         identifier,
         integer,
@@ -47,7 +46,6 @@ pub const Token = struct {
         pub fn lexeme(self: Tag) ?[]const u8 {
             return switch (self) {
                 .block_comment,
-                .eof,
                 .float,
                 .identifier,
                 .integer,
@@ -111,10 +109,9 @@ pub const Lexer = struct {
     /// The current index into `buffer`
     index: u32,
 
-    pub const State = enum {
+    const State = enum {
         block_comment,
         comment_start,
-        eof,
         float_literal,
         hex_literal,
         identifier,
@@ -142,7 +139,7 @@ pub const Lexer = struct {
         if (self.index >= self.buffer.len) return null;
         var state: State = .start;
         var result: Token = .{
-            .tag = .eof,
+            .tag = .invalid,
             .loc = .{
                 .start = self.index,
                 .end = undefined,

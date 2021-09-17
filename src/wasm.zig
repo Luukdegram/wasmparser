@@ -193,6 +193,7 @@ pub const Module = struct {
     elements: []const sections.Element = &.{},
     code: []const sections.Code = &.{},
     data: []const sections.Data = &.{},
+    version: u32,
 };
 
 pub const Instruction = struct {

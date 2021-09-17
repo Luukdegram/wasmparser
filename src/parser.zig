@@ -67,22 +67,24 @@ fn Parser(comptime ReaderType: type) type {
             };
         }
 
-        /// Verifies that the first 4 bytes contains \0Asm and the following 4 bytes the wasm version we support.
+        /// Verifies that the first 4 bytes contains \0Asm
         fn verifyMagicBytes(self: *Self) Error!void {
             var magic_bytes: [4]u8 = undefined;
-            var wasm_version: [4]u8 = undefined;
 
             try self.reader.readNoEof(&magic_bytes);
             if (!std.mem.eql(u8, &magic_bytes, &std.wasm.magic)) return error.InvalidMagicByte;
-
-            try self.reader.readNoEof(&wasm_version);
-            if (!std.mem.eql(u8, &wasm_version, &std.wasm.version)) return error.InvalidWasmVersion;
         }
 
         fn parseModule(self: *Self, gpa: *Allocator) Error!wasm.Module {
             try self.verifyMagicBytes();
+            const version = try self.reader.readIntLittle(u32);
 
-            var module: wasm.Module = .{};
+            var module: wasm.Module = .{ .version = version };
+
+            // custom sections do not provide a count, as they are each their very own
+            // section that simply share the same section ID. For this reason we use
+            // an arraylist so we can append them individually.
+            var custom_sections = std.ArrayList(wasm.sections.Custom).init(gpa);
 
             while (self.reader.readByte()) |byte| {
                 const len = try readLeb(u32, self.reader);
@@ -90,20 +92,15 @@ fn Parser(comptime ReaderType: type) type {
 
                 switch (@intToEnum(wasm.Section, byte)) {
                     .custom => {
-                        for (try readVec(&module.custom, reader, gpa)) |*custom| {
-                            // for custom section we read name and data section at once rather
-                            // than read every byte individually as that's slow.
-                            const name_len = try readLeb(u8, reader);
-                            const name = try gpa.alloc(u8, name_len);
-                            custom.name = name;
-                            try reader.readNoEof(name);
+                        const custom = try custom_sections.addOne();
+                        const name_len = try readLeb(u32, reader);
+                        const name = try gpa.alloc(u8, name_len);
+                        try reader.readNoEof(name);
 
-                            const data_len = len - name_len - @sizeOf(u32);
-                            const data = try gpa.alloc(u8, data_len);
-                            custom.data = data;
-                            try reader.readNoEof(data);
-                        }
-                        try assertEnd(reader);
+                        const data = try gpa.alloc(u8, reader.context.bytes_left);
+                        try reader.readNoEof(data);
+
+                        custom.* = .{ .name = name, .data = data };
                     },
                     .type => {
                         for (try readVec(&module.types, reader, gpa)) |*type_val| {
@@ -129,7 +126,7 @@ fn Parser(comptime ReaderType: type) type {
                             const name_len = try readLeb(u32, reader);
                             const name = try gpa.alloc(u8, name_len);
                             import.name = name;
-                            try reader.readNoEof(module_name);
+                            try reader.readNoEof(name);
 
                             const kind = try readEnum(wasm.ExternalType, reader);
                             import.kind = switch (kind) {
@@ -209,7 +206,6 @@ fn Parser(comptime ReaderType: type) type {
                     .code => {
                         for (try readVec(&module.code, reader, gpa)) |*code| {
                             const body_len = try readLeb(u32, reader);
-                            const start_len = reader.context.bytes_left;
 
                             var code_reader = std.io.limitedReader(reader, body_len).reader();
 
@@ -256,7 +252,6 @@ fn Parser(comptime ReaderType: type) type {
                             const init_len = try readLeb(u32, reader);
                             const init_data = try gpa.alloc(u8, init_len);
                             data.data = init_data;
-
                             try reader.readNoEof(init_data);
                         }
                         try assertEnd(reader);
@@ -270,7 +265,7 @@ fn Parser(comptime ReaderType: type) type {
                 error.EndOfStream => {},
                 else => |e| return e,
             }
-
+            module.custom = custom_sections.toOwnedSlice();
             return module;
         }
     };

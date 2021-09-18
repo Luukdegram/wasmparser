@@ -107,6 +107,20 @@ pub const sections = struct {
     pub const Custom = struct {
         name: []const u8,
         data: []const u8,
+        start: usize,
+        end: usize,
+
+        pub fn format(self: Custom, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = fmt;
+            _ = options;
+            try writer.print("{s: >8} start=0x{x:0>8} end=0x{x:0>8} (size=0x{x:0>8}) \"{s}\"", .{
+                "Custom",
+                self.start,
+                self.end,
+                self.end - self.start,
+                self.name,
+            });
+        }
     };
 
     pub const Type = struct {
@@ -180,21 +194,59 @@ pub const sections = struct {
     };
 };
 
+/// Represents a wasm module, containing the version
+/// of the wasm spec it complies with, and access to all of its
+/// sections.
 pub const Module = struct {
     custom: []const sections.Custom = &.{},
-    types: []const sections.Type = &.{},
-    imports: []const sections.Import = &.{},
-    functions: []const sections.Func = &.{},
-    tables: []const sections.Table = &.{},
-    memories: []const sections.Memory = &.{},
-    globals: []const sections.Global = &.{},
-    exports: []const sections.Export = &.{},
+    types: SectionData(sections.Type) = .{},
+    imports: SectionData(sections.Import) = .{},
+    functions: SectionData(sections.Func) = .{},
+    tables: SectionData(sections.Table) = .{},
+    memories: SectionData(sections.Memory) = .{},
+    globals: SectionData(sections.Global) = .{},
+    exports: SectionData(sections.Export) = .{},
+    elements: SectionData(sections.Element) = .{},
+    code: SectionData(sections.Code) = .{},
+    data: SectionData(sections.Data) = .{},
     start: ?indexes.Func = null,
-    elements: []const sections.Element = &.{},
-    code: []const sections.Code = &.{},
-    data: []const sections.Data = &.{},
     version: u32,
+
+    /// Returns a custom section by its name.
+    /// Will return `null` when the custom section of a given `name` does not exist.
+    pub fn customByName(self: Module, name: []const u8) ?sections.Custom {
+        return for (self.custom.data) |custom| {
+            if (std.mem.eql(u8, custom.name, name)) break custom;
+        } else null;
+    }
 };
+
+pub fn SectionData(comptime T: type) type {
+    return struct {
+        data: []const T = &.{},
+        start: usize = 0,
+        end: usize = 0,
+
+        /// Formats the `SectionData` for debug purposes
+        pub fn format(self: @This(), comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+            _ = options;
+            _ = fmt;
+            const type_name = comptime blk: {
+                var name: [@typeName(T).len]u8 = undefined;
+                std.mem.copy(u8, &name, @typeName(T));
+                name[0] = std.ascii.toUpper(name[0]);
+                break :blk name;
+            };
+            try writer.print("{s: >8} start=0x{x:0>8} end=0x{x:0>8} (size=0x{x:0>8}) count: {d}", .{
+                type_name,
+                self.start,
+                self.end,
+                self.end - self.start,
+                self.data.len,
+            });
+        }
+    };
+}
 
 pub const Instruction = struct {
     opcode: wasm.Opcode,

@@ -215,7 +215,7 @@ pub const Module = struct {
     /// Returns a custom section by its name.
     /// Will return `null` when the custom section of a given `name` does not exist.
     pub fn customByName(self: Module, name: []const u8) ?sections.Custom {
-        return for (self.custom.data) |custom| {
+        return for (self.custom) |custom| {
             if (std.mem.eql(u8, custom.name, name)) break custom;
         } else null;
     }

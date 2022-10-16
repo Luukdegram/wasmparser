@@ -10,7 +10,7 @@ pub const Result = struct {
 
     /// Frees all memory that was allocated when parsing.
     /// Usage of `module` or `Result` itself is therefore illegal.
-    pub fn deinit(self: *Result, gpa: *Allocator) void {
+    pub fn deinit(self: *Result, gpa: Allocator) void {
         self.arena.promote(gpa).deinit();
         self.* = undefined;
     }
@@ -18,8 +18,17 @@ pub const Result = struct {
 
 /// Parses a wasm stream into a `Result` containing both the `wasm.Module` as well
 /// as an arena state that contains all allocated memory for easy cleanup.
-pub fn parse(gpa: *Allocator, reader: anytype) Parser(@TypeOf(reader)).Error!Result {
-    var parser = Parser(@TypeOf(reader)).init(reader);
+pub fn parse(gpa: Allocator, reader: anytype) Parser(@TypeOf(reader)).Error!Result {
+    var parser = Parser(@TypeOf(reader)).init(reader, .{});
+    return parser.parseWasm(gpa);
+}
+
+pub const Options = struct {
+    skip_section: [256]bool = [_]bool{false} ** 256, // mark section ids to skip
+};
+
+pub fn parseWithOptions(gpa: Allocator, reader: anytype, options: Options) Parser(@TypeOf(reader)).Error!Result {
+    var parser = Parser(@TypeOf(reader)).init(reader, options);
     return parser.parseWasm(gpa);
 }
 
@@ -53,16 +62,17 @@ fn Parser(comptime ReaderType: type) type {
         const Error = ReaderType.Error || ParseError || LebError;
 
         reader: std.io.CountingReader(ReaderType),
+        options: Options,
 
-        fn init(reader: ReaderType) Self {
-            return .{ .reader = std.io.countingReader(reader) };
+        fn init(reader: ReaderType, options: Options) Self {
+            return .{ .reader = std.io.countingReader(reader), .options = options };
         }
 
-        fn parseWasm(self: *Self, gpa: *Allocator) Error!Result {
+        fn parseWasm(self: *Self, gpa: Allocator) Error!Result {
             var arena = std.heap.ArenaAllocator.init(gpa);
             errdefer arena.deinit();
             return Result{
-                .module = try self.parseModule(&arena.allocator),
+                .module = try self.parseModule(arena.allocator()),
                 .arena = arena.state,
             };
         }
@@ -75,7 +85,7 @@ fn Parser(comptime ReaderType: type) type {
             if (!std.mem.eql(u8, &magic_bytes, &std.wasm.magic)) return error.InvalidMagicByte;
         }
 
-        fn parseModule(self: *Self, gpa: *Allocator) Error!wasm.Module {
+        fn parseModule(self: *Self, gpa: Allocator) Error!wasm.Module {
             try self.verifyMagicBytes();
             const version = try self.reader.reader().readIntLittle(u32);
 
@@ -85,12 +95,16 @@ fn Parser(comptime ReaderType: type) type {
             // section that simply share the same section ID. For this reason we use
             // an arraylist so we can append them individually.
             var custom_sections = std.ArrayList(wasm.sections.Custom).init(gpa);
+            while (self.reader.reader().readByte()) |section_id| {
+                const section_len = try readLeb(u32, self.reader.reader());
+                var limited_reader = std.io.limitedReader(self.reader.reader(), section_len);
+                var reader = limited_reader.reader();
+                if (self.options.skip_section[section_id]) {
+                    try reader.skipBytes(section_len, .{});
+                    continue;
+                }
 
-            while (self.reader.reader().readByte()) |byte| {
-                const len = try readLeb(u32, self.reader.reader());
-                var reader = std.io.limitedReader(self.reader.reader(), len).reader();
-
-                switch (@intToEnum(wasm.Section, byte)) {
+                switch (@intToEnum(wasm.Section, section_id)) {
                     .custom => {
                         const start = self.reader.bytes_read;
                         const custom = try custom_sections.addOne();
@@ -225,7 +239,8 @@ fn Parser(comptime ReaderType: type) type {
                         for (try readVec(&module.code.data, reader, gpa)) |*code| {
                             const body_len = try readLeb(u32, reader);
 
-                            var code_reader = std.io.limitedReader(reader, body_len).reader();
+                            var code_limited_reader = std.io.limitedReader(reader, body_len);
+                            var code_reader = code_limited_reader.reader();
 
                             // first parse the local declarations
                             {
@@ -280,6 +295,7 @@ fn Parser(comptime ReaderType: type) type {
                     .module => @panic("TODO: Implement 'module' section"),
                     .instance => @panic("TODO: Implement 'instance' section"),
                     .alias => @panic("TODO: Implement 'alias' section"),
+                    .data_count => @panic("TODO: Implement 'data_count' section"),
                     _ => |id| std.log.scoped(.wasmparser).debug("Found unimplemented section with id '{d}'", .{id}),
                 }
             } else |err| switch (err) {
@@ -294,7 +310,7 @@ fn Parser(comptime ReaderType: type) type {
 
 /// First reads the count from the reader and then allocate
 /// a slice of ptr child's element type.
-fn readVec(ptr: anytype, reader: anytype, gpa: *Allocator) ![]ElementType(@TypeOf(ptr)) {
+fn readVec(ptr: anytype, reader: anytype, gpa: Allocator) ![]ElementType(@TypeOf(ptr)) {
     const len = try readLeb(u32, reader);
     const slice = try gpa.alloc(ElementType(@TypeOf(ptr)), len);
     ptr.* = slice;
@@ -353,7 +369,7 @@ fn assertEnd(reader: anytype) !void {
     if (reader.context.bytes_left != 0) return error.MalformedSection;
 }
 
-fn buildInstruction(opcode: std.wasm.Opcode, gpa: *Allocator, reader: anytype) !wasm.Instruction {
+fn buildInstruction(opcode: std.wasm.Opcode, gpa: Allocator, reader: anytype) !wasm.Instruction {
     var instr: wasm.Instruction = .{
         .opcode = opcode,
         .value = undefined,

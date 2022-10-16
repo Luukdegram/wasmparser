@@ -17,25 +17,26 @@ const Options = struct {
 };
 
 fn testForOptions(content: []const u8, options: Options) !void {
-    var reader = std.io.fixedBufferStream(content).reader();
+    var stream = std.io.fixedBufferStream(content);
+    var reader = stream.reader();
     var result = try parse(ally, reader);
     defer result.deinit(ally);
 
     const module = result.module;
     if (options.code_len) |len| {
-        try testing.expectEqual(len, module.code.len);
+        try testing.expectEqual(len, module.code.data.len);
     }
 
     if (options.functions_len) |len| {
-        try testing.expectEqual(len, module.functions.len);
+        try testing.expectEqual(len, module.functions.data.len);
     }
 
     for (options.export_names) |name, i| {
-        try testing.expectEqualStrings(name, module.exports[i].name);
+        try testing.expectEqualStrings(name, module.exports.data[i].name);
     }
 
     for (options.locals) |local, i| {
-        for (module.code[i].locals) |code_local| {
+        for (module.code.data[i].locals) |code_local| {
             if (local.local == code_local.valtype) {
                 try testing.expectEqual(local.count, code_local.count);
             }
@@ -44,7 +45,7 @@ fn testForOptions(content: []const u8, options: Options) !void {
 }
 
 test "tests/add.wasm" {
-    const file = @embedFile("../tests/add.wasm");
+    const file = @embedFile("add.wasm");
     try testForOptions(file, .{
         .code_len = 1,
         .functions_len = 1,
@@ -53,7 +54,7 @@ test "tests/add.wasm" {
 }
 
 test "tests/call_indirect.wasm" {
-    const file = @embedFile("../tests/call_indirect.wasm");
+    const file = @embedFile("call_indirect.wasm");
     try testForOptions(file, .{
         .code_len = 3,
         .functions_len = 3,
@@ -63,5 +64,22 @@ test "tests/call_indirect.wasm" {
             "multiply",
             "main",
         },
+    });
+}
+
+test "tests/wasi_hello_world.wasm except code" {
+    const file = @embedFile("wasi_hello_world.wasm");
+    var stream = std.io.fixedBufferStream(file);
+    var options : wasmparser.parser.Options = .{};
+    // skip code section
+    options.skip_section[@enumToInt(std.wasm.Section.code)] = true;
+    var result = try wasmparser.parser.parseWithOptions(ally, stream.reader(), options);
+    defer result.deinit(ally);
+}
+
+test "tests/wasi_hello_world.wasm" {
+    // This is not working, seems something not supported by parser in code section
+    const file = @embedFile("wasi_hello_world.wasm");
+    try testForOptions(file, .{
     });
 }

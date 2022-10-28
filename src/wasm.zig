@@ -1,6 +1,6 @@
 const std = @import("std");
 const wasm = std.wasm;
-const TypeInfo = std.builtin.TypeInfo;
+const TypeInfo = std.builtin.Type;
 
 /// Wasm union that contains the value of each possible `ValueType`
 pub const Value = union(ValueType) {

@@ -9,7 +9,7 @@ pub fn build(b: *std.build.Builder) void {
     lib.setBuildMode(mode);
     lib.install();
 
-    var main_tests = b.addTest("src/test.zig");
+    var main_tests = b.addTest("tests/test.zig");
     main_tests.addPackagePath("wasmparser", "src/lib.zig");
     main_tests.setBuildMode(mode);
 

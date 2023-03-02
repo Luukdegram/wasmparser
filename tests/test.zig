@@ -31,11 +31,11 @@ fn testForOptions(content: []const u8, options: Options) !void {
         try testing.expectEqual(len, module.functions.data.len);
     }
 
-    for (options.export_names) |name, i| {
+    for (options.export_names, 0..) |name, i| {
         try testing.expectEqualStrings(name, module.exports.data[i].name);
     }
 
-    for (options.locals) |local, i| {
+    for (options.locals, 0..) |local, i| {
         for (module.code.data[i].locals) |code_local| {
             if (local.local == code_local.valtype) {
                 try testing.expectEqual(local.count, code_local.count);
@@ -67,19 +67,7 @@ test "tests/call_indirect.wasm" {
     });
 }
 
-test "tests/wasi_hello_world.wasm except code" {
-    const file = @embedFile("wasi_hello_world.wasm");
-    var stream = std.io.fixedBufferStream(file);
-    var options : wasmparser.parser.Options = .{};
-    // skip code section
-    options.skip_section[@enumToInt(std.wasm.Section.code)] = true;
-    var result = try wasmparser.parser.parseWithOptions(ally, stream.reader(), options);
-    defer result.deinit(ally);
-}
-
 test "tests/wasi_hello_world.wasm" {
-    // This is not working, seems something not supported by parser in code section
     const file = @embedFile("wasi_hello_world.wasm");
-    try testForOptions(file, .{
-    });
+    try testForOptions(file, .{});
 }

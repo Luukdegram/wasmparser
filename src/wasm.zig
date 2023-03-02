@@ -56,7 +56,6 @@ fn MergedEnum(comptime T: type, comptime fields: []const TypeInfo.EnumField) typ
     std.mem.copy(TypeInfo.EnumField, new_fields[old_fields.len..], fields);
 
     return @Type(.{ .Enum = .{
-        .layout = .Auto,
         .tag_type = u8,
         .fields = &new_fields,
         .decls = &.{},
@@ -301,6 +300,5 @@ pub const SecondaryOpcode = enum(u8) {
     _,
 };
 
-pub const need_secondary = @intToEnum(wasm.Opcode, 0xFC);
 pub const table_get = @intToEnum(wasm.Opcode, 0x25);
 pub const table_set = @intToEnum(wasm.Opcode, 0x26);

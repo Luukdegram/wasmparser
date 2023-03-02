@@ -260,7 +260,7 @@ fn Parser(comptime ReaderType: type) type {
                                 var instructions = std.ArrayList(wasm.Instruction).init(gpa);
                                 defer instructions.deinit();
 
-                                while (readEnum(std.wasm.Opcode, code_reader)) |opcode| {
+                                while (readOpcode(code_reader)) |opcode| {
                                     const instr = try buildInstruction(opcode, gpa, code_reader);
                                     try instructions.append(instr);
                                 } else |err| switch (err) {
@@ -341,6 +341,10 @@ fn readEnum(comptime T: type, reader: anytype) !T {
     }
 }
 
+fn readOpcode(reader: anytype) !std.wasm.Opcode {
+    return @intToEnum(std.wasm.Opcode, try reader.readByte());
+}
+
 fn readLimits(reader: anytype) !wasm.Limits {
     const flags = try readLeb(u1, reader);
     const min = try readLeb(u32, reader);
@@ -358,7 +362,7 @@ fn readInit(reader: anytype) !wasm.InitExpression {
         else => unreachable,
     };
 
-    if ((try readEnum(std.wasm.Opcode, reader)) != .end) return error.MissingEndForExpression;
+    if ((try readOpcode(reader)) != .end) return error.MissingEndForExpression;
     return init;
 }
 
@@ -445,7 +449,7 @@ fn buildInstruction(opcode: std.wasm.Opcode, gpa: Allocator, reader: anytype) !w
             }
             break :blk .{ .multi_valtype = .{ .data = list.ptr, .len = len } };
         },
-        wasm.need_secondary => @as(wasm.Instruction.InstrValue, blk: {
+        .prefixed => @as(wasm.Instruction.InstrValue, blk: {
             const secondary = try readEnum(wasm.SecondaryOpcode, reader);
             instr.secondary = secondary;
             switch (secondary) {

@@ -67,18 +67,7 @@ test "tests/call_indirect.wasm" {
     });
 }
 
-test "tests/wasi_hello_world.wasm except code" {
-    const file = @embedFile("wasi_hello_world.wasm");
-    var stream = std.io.fixedBufferStream(file);
-    var options: wasmparser.parser.Options = .{};
-    // skip code section
-    options.skip_section[@enumToInt(std.wasm.Section.code)] = true;
-    var result = try wasmparser.parser.parseWithOptions(ally, stream.reader(), options);
-    defer result.deinit(ally);
-}
-
 test "tests/wasi_hello_world.wasm" {
-    // This is not working, seems something not supported by parser in code section
     const file = @embedFile("wasi_hello_world.wasm");
     try testForOptions(file, .{});
 }

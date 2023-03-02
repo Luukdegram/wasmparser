@@ -271,7 +271,7 @@ fn Parser(comptime ReaderType: type) type {
                                     else => |e| return e,
                                 }
 
-                                code.body = instructions.toOwnedSlice();
+                                code.body = try instructions.toOwnedSlice();
                             }
                             try assertEnd(code_reader);
                         }
@@ -302,7 +302,7 @@ fn Parser(comptime ReaderType: type) type {
                 error.EndOfStream => {},
                 else => |e| return e,
             }
-            module.custom = custom_sections.toOwnedSlice();
+            module.custom = try custom_sections.toOwnedSlice();
             return module;
         }
     };

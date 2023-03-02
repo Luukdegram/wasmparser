@@ -56,7 +56,6 @@ fn MergedEnum(comptime T: type, comptime fields: []const TypeInfo.EnumField) typ
     std.mem.copy(TypeInfo.EnumField, new_fields[old_fields.len..], fields);
 
     return @Type(.{ .Enum = .{
-        .layout = .Auto,
         .tag_type = u8,
         .fields = &new_fields,
         .decls = &.{},
